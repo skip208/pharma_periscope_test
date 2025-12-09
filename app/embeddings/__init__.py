@@ -1,0 +1,4 @@
+"""
+Embeddings client package.
+"""
+

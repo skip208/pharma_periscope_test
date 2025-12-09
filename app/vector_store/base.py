@@ -1,0 +1,4 @@
+"""
+VectorStore interface placeholder.
+"""
+

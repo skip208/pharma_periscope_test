@@ -1,0 +1,4 @@
+"""
+Indexing pipeline placeholder.
+"""
+
