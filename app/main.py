@@ -2,6 +2,7 @@ import logging
 
 from fastapi import FastAPI
 
+from app.api.routes import router as api_router
 from app.config import public_settings, setup_logging
 
 logger = setup_logging()
@@ -14,4 +15,7 @@ logger.info("Loaded settings: %s", public_settings())
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+app.include_router(api_router)
 
