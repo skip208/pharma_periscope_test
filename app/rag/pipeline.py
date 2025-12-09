@@ -42,11 +42,13 @@ class RAGService:
         embeddings_client: EmbeddingsClient,
         llm_client: LLMClient,
         logger_: logging.Logger | None = None,
+        request_id: str | None = None,
     ) -> None:
         self.vector_store = vector_store
         self.embeddings_client = embeddings_client
         self.llm_client = llm_client
         self.logger = logger_ or logging.getLogger(__name__)
+        self.request_id = request_id
 
     # --- Public API ---
     def answer_question(self, request: AskRequest) -> AskResponse:
@@ -58,7 +60,10 @@ class RAGService:
         )
 
         if self._should_refuse(retrievals):
-            self.logger.info("Guardrails refusal before LLM", extra={"reason": "low_relevance"})
+            self.logger.info(
+                "Guardrails refusal before LLM",
+                extra={"reason": "low_relevance", "request_id": self.request_id},
+            )
             return self._refusal_response()
 
         context_limit = request.max_context_chunks or settings.max_context_chunks
@@ -121,6 +126,11 @@ class RAGService:
                 "requested": max_candidates,
                 "returned": len(processed),
                 "top_score": round(processed[0].score, 3) if processed else None,
+                "request_id": self.request_id,
+                "results": [
+                    {"chunk_id": r.chunk.id, "score": round(r.score, 3)}
+                    for r in processed[: min(5, len(processed))]
+                ],
             },
         )
         return processed

@@ -11,6 +11,7 @@ from app.llm.client import LLMClient
 from app.models.schemas import AskRequest, AskResponse, ReindexRequest, ReindexResponse
 from app.rag.pipeline import RAGService
 from app.vector_store import get_vector_store
+from uuid import uuid4
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -55,11 +56,13 @@ def ask(request: AskRequest) -> AskResponse:
     if not question:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question must not be empty")
 
-    logger.info("Ask request", extra={"len": len(question)})
+    request_id = str(uuid4())
+    logger.info("Ask request", extra={"len": len(question), "request_id": request_id})
     service = RAGService(
         vector_store=get_vector_store(),
         embeddings_client=EmbeddingsClient(),
         llm_client=LLMClient(),
+        request_id=request_id,
     )
     return service.answer_question(request)
 
