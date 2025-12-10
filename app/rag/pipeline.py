@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Sequence, Dict, Set
 
 from app.config import settings
 from app.embeddings.client import EmbeddingsClient
@@ -71,23 +71,46 @@ class RAGService:
         messages = self._build_messages(question=normalized_question, context=context)
 
         raw_answer = self.llm_client.chat(messages, response_format={"type": "json_object"})
-        parsed = self._parse_llm_response(raw_answer)
+        parsed_primary = self._parse_llm_response(raw_answer)
 
-        if not parsed:
+        if not parsed_primary:
             self.logger.warning("LLM response parse failed, fallback to refusal")
             return self._refusal_response()
 
-        if not parsed.get("can_answer", False):
+        if not parsed_primary.get("can_answer", False):
             self.logger.info("LLM indicated refusal, fallback")
             return self._refusal_response()
 
-        citations = self._map_citations(parsed.get("sources") or [], context)
-        if not citations:
+        citations_primary = parsed_primary.get("sources") or []
+        if not citations_primary:
             self.logger.info("Citations missing, fallback")
             return self._refusal_response()
 
-        answer_short = parsed.get("answer_short") or DEFAULT_REFUSAL
-        answer_full = parsed.get("answer_full") or answer_short
+        expanded_context = self._expand_context_with_neighbors(
+            citations_primary, retrievals=retrievals, fallback=context
+        )
+
+        parsed_final = parsed_primary
+        context_used = context
+
+        if expanded_context != context:
+            messages_expanded = self._build_messages(question=normalized_question, context=expanded_context)
+            raw_expanded = self.llm_client.chat(messages_expanded, response_format={"type": "json_object"})
+            parsed_expanded = self._parse_llm_response(raw_expanded)
+
+            if parsed_expanded and parsed_expanded.get("can_answer", False):
+                parsed_final = parsed_expanded
+                context_used = expanded_context
+            else:
+                self.logger.info("Expanded pass failed or refused; using primary answer")
+
+        citations = self._map_citations(parsed_final.get("sources") or [], context_used)
+        if not citations:
+            self.logger.info("Citations missing after mapping, fallback")
+            return self._refusal_response()
+
+        answer_short = parsed_final.get("answer_short") or DEFAULT_REFUSAL
+        answer_full = parsed_final.get("answer_full") or answer_short
 
         return AskResponse(
             answer_short=answer_short,
@@ -96,7 +119,7 @@ class RAGService:
             citations=citations,
             context_chunks=[
                 ContextChunk(chunk_id=item.chunk.id, text=item.chunk.text, metadata=item.chunk.metadata)
-                for item in context
+                for item in context_used
             ],
             raw_scores=[
                 RetrievalScore(chunk_id=item.chunk.id, score=item.score)
@@ -244,6 +267,56 @@ class RAGService:
                 )
             )
         return citations
+
+    def _expand_context_with_neighbors(
+        self,
+        citations: Sequence[dict],
+        retrievals: Sequence[RetrievedChunk],
+        fallback: Sequence[RetrievedChunk],
+    ) -> List[RetrievedChunk]:
+        """
+        Для процитированных чанков добавляем соседние (предыдущий/следующий) в той же главе/книге,
+        если они есть в выборке retrievals. Сохраняем порядок по убыванию релевантности.
+        """
+        if not citations:
+            return list(fallback)
+
+        id_lookup: Dict[str, RetrievedChunk] = {r.chunk.id: r for r in retrievals}
+        key_lookup: Dict[tuple, RetrievedChunk] = {}
+        for r in retrievals:
+            meta = r.chunk.metadata
+            key = (meta.get("book_id"), meta.get("chapter_index"), meta.get("chunk_index"))
+            key_lookup[key] = r
+
+        wanted: Set[str] = set()
+        for src in citations:
+            cid = src.get("chunk_id")
+            base = id_lookup.get(cid)
+            if not base:
+                continue
+            meta = base.chunk.metadata
+            book_id = meta.get("book_id")
+            chapter_index = meta.get("chapter_index")
+            idx = meta.get("chunk_index")
+            if book_id is None or chapter_index is None or idx is None:
+                continue
+            for delta in (-1, 0, 1):
+                neighbor = key_lookup.get((book_id, chapter_index, idx + delta))
+                if neighbor:
+                    wanted.add(neighbor.chunk.id)
+
+        if not wanted:
+            return list(fallback)
+
+        expanded: List[RetrievedChunk] = []
+        seen: Set[str] = set()
+        for r in retrievals:
+            cid = r.chunk.id
+            if cid in wanted and cid not in seen:
+                expanded.append(r)
+                seen.add(cid)
+
+        return expanded or list(fallback)
 
     @staticmethod
     def _refusal_response() -> AskResponse:
