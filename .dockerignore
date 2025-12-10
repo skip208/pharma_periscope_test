@@ -1,0 +1,12 @@
+.git
+.gitignore
+.cursor
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.log
+data/vector_store
+terminals
+node_modules
+.DS_Store
